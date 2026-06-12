@@ -4,12 +4,12 @@ const { MongoClient } = require('mongodb');
 
 const botToken = "8939249559:AAFSrQ_X0pGCP6fwtKgv9K1S8dtavKOOYV0";
 const adminId = "5291409360";
-const mongoUrl = process.env.MONGO_URL; // Fetched automatically from Railway Variables
+const mongoUrl = process.env.MONGO_URL; 
 
 let bot;
 let collection;
 
-// Pre-fill with a default safe structure to prevent any "undefined" crashes
+// Default data structure
 let data = {
     users: [],
     user_details: {},
@@ -32,51 +32,45 @@ let data = {
     }
 };
 
-async function initData() {
+async function initBot() {
     if (!mongoUrl) {
-        console.error("❌ ERROR: MONGO_URL variable is not set in Railway!");
+        console.error("❌ ERROR: MONGO_URL variable is not set!");
         process.exit(1);
     }
 
     try {
+        // 1. Connect to MongoDB
         const dbClient = new MongoClient(mongoUrl);
         await dbClient.connect();
         const db = dbClient.db('VipBotDB');
         collection = db.collection('botStorage');
         console.log("✅ Connected to MongoDB successfully!");
 
+        // 2. Load Data
         const dbData = await collection.findOne({ _id: 'main_data' });
 
         if (!dbData) {
             console.log("⚠️ MongoDB is empty. Fetching old data from URL...");
             try {
                 const response = await axios.get("https://vipcentre.site/titanbotpom/data.json");
-                if (response.data) {
-                    // Merge old data with safe defaults
-                    data = { ...data, ...response.data };
-                }
+                if (response.data) data = { ...data, ...response.data };
                 console.log("✅ Remote data fetched successfully.");
             } catch (err) {
                 console.log("❌ Failed to fetch remote data. Using default local data.");
             }
 
-            // Ensure critical arrays/objects exist
             if (!data.users) data.users = [];
             if (!data.user_details) {
                 data.user_details = {};
-                data.users.forEach(u => {
-                    data.user_details[u] = "User (@NoUsername)";
-                });
+                data.users.forEach(u => { data.user_details[u] = "User (@NoUsername)"; });
             }
 
-            // Save to DB for the first time
             await collection.updateOne({ _id: 'main_data' }, { $set: data }, { upsert: true });
         } else {
             console.log("✅ Old data loaded from MongoDB successfully.");
             data = dbData;
-            delete data._id; // Remove MongoDB internal ID 
+            delete data._id; 
 
-            // Safety net: Guarantee arrays/objects exist after loading
             if (!data.users) data.users = [];
             if (!data.user_details) data.user_details = {};
             if (!data.demos) data.demos = [];
@@ -85,14 +79,34 @@ async function initData() {
             if (!data.settings) data.settings = {};
         }
 
-        // 🔥 CRITICAL FIX: Only start the bot AFTER data is fully loaded and safe
+        // 3. Initialize Bot
         bot = new TelegramBot(botToken, { polling: true });
+        
+        // 🔥 FIX: Prevent App Crash on Polling Conflict 🔥
+        bot.on('polling_error', (error) => {
+            console.error("⚠️ Polling Warning (Handled):", error.message);
+        });
+
         setupBotListeners();
         console.log("🚀 Bot is now online and polling for messages!");
 
+        // 🔥 FIX: Graceful Shutdown for Railway to prevent 409 Conflicts 🔥
+        const shutdown = async () => {
+            console.log("🛑 Shutdown signal received. Stopping bot polling securely...");
+            try {
+                await bot.stopPolling();
+            } catch (e) {
+                console.error("Error stopping polling:", e);
+            }
+            process.exit(0);
+        };
+
+        process.once('SIGINT', shutdown);
+        process.once('SIGTERM', shutdown);
+
     } catch (error) {
-        console.error("❌ Fatal MongoDB Error:", error);
-        process.exit(1); // Force restart if DB fails
+        console.error("❌ Fatal Startup Error:", error);
+        process.exit(1); 
     }
 }
 
@@ -116,13 +130,10 @@ function getAdminMenu() {
     };
 }
 
-// Wrap all bot logic inside a function to activate later
 function setupBotListeners() {
     // --- Message Handling ---
     bot.on('message', async (msg) => {
         if (!msg.chat) return;
-        
-        // Final safety check
         if (!data || !Array.isArray(data.users)) return;
 
         const chatId = msg.chat.id.toString();
@@ -136,7 +147,6 @@ function setupBotListeners() {
         if (!data.users.includes(chatId)) {
             data.users.push(chatId);
             
-            // 🚨 NEW USER NOTIFICATION TO ADMIN 🚨
             const safeName = firstName.replace(/</g, "&lt;").replace(/>/g, "&gt;");
             const newUserMention = `<a href='tg://user?id=${chatId}'>${safeName}</a>`;
             const adminMsg = `🚨 <b>New User Started Bot!</b>\n\n👤 <b>Name:</b> ${newUserMention}\n🆔 <b>Chat ID:</b> <code>${chatId}</code>\n🔗 <b>Username:</b> @${username}`;
@@ -152,7 +162,7 @@ function setupBotListeners() {
 
         // --- Admin State & Commands Handling ---
         if (isAdmin) {
-            // 📢 BROADCAST COMMAND LOGIC (/bdc)
+            // Broadcast Command
             if (text.startsWith('/bdc ') || captionText.startsWith('/bdc ')) {
                 const msgId = msg.message_id;
                 
@@ -175,7 +185,7 @@ function setupBotListeners() {
                         }
                         successCount++;
                     } catch (e) {
-                        // Ignore blocked bot errors
+                        // User blocked bot
                     }
                 }
                 return bot.sendMessage(chatId, `✅ Broadcast successfully sent to ${successCount} unique users.`);
@@ -414,7 +424,7 @@ function setupBotListeners() {
                     const inlineBtn = { inline_keyboard: [[{ text: '👉 Get Premium', callback_data: 'get_premium' }]] };
                     
                     bot.sendVideo(chatId, vid, { caption: caption, reply_markup: inlineBtn }).then(sentMsg => {
-                        // Automatically delete the video after 5 minutes (300,000 milliseconds)
+                        // Automatically delete the video after 5 minutes
                         setTimeout(() => {
                             bot.deleteMessage(chatId, sentMsg.message_id).catch(() => {});
                         }, 5 * 60 * 1000);
@@ -423,7 +433,6 @@ function setupBotListeners() {
                 
                 const warningMsg = "⚠️ **All Demo Videos Will Be Deleted After 5 Minutes!** ⚠️\n\n_Get Premium now to enjoy unlimited lifetime access!_";
                 bot.sendMessage(chatId, warningMsg, { parse_mode: 'Markdown' }).then(sentMsg => {
-                    // Auto-delete the warning message too
                     setTimeout(() => {
                         bot.deleteMessage(chatId, sentMsg.message_id).catch(() => {});
                     }, 5 * 60 * 1000);
@@ -445,7 +454,7 @@ function setupBotListeners() {
                 inline_keyboard: [[{ text: 'PAYMENT DONE SEND SCREENSHOT ✅', callback_data: 'ask_screenshot' }]]
             };
 
-            return bot.sendPhoto(chatId, qrUrl, { caption: payText, reply_markup: paymentButtons });
+            return bot.sendPhoto(chatId, qrUrl, { caption: payText, reply_markup: paymentButtons }).catch(() => {});
         }
 
         if (dataStr === 'ask_screenshot') { return askForScreenshot(chatId); }
@@ -460,7 +469,7 @@ function setupBotListeners() {
                     [{ text: 'All in One Link', callback_data: `sendlink_all_${userId}` }]
                 ]
             };
-            await bot.editMessageCaption("✅ Payment Approved. Which link to send?", { chat_id: chatId, message_id: messageId, reply_markup: linksKeyboard });
+            await bot.editMessageCaption("✅ Payment Approved. Which link to send?", { chat_id: chatId, message_id: messageId, reply_markup: linksKeyboard }).catch(() => {});
             
             data.history.approved = (data.history.approved || 0) + 1;
             saveData();
@@ -470,8 +479,8 @@ function setupBotListeners() {
         if (dataStr.startsWith('reject_')) {
             const userId = dataStr.replace('reject_', '');
             const rejectText = `❌ YOUR PAYMENT WAS FAILED\nInvalid payment or fake payment\nContact support: ${data.settings.support}`;
-            await bot.sendPhoto(userId, 'https://i.ibb.co/h147XCFh/x.png', { caption: rejectText });
-            await bot.editMessageCaption(`❌ Payment Rejected for ${userId}.`, { chat_id: chatId, message_id: messageId });
+            await bot.sendPhoto(userId, 'https://i.ibb.co/h147XCFh/x.png', { caption: rejectText }).catch(() => {});
+            await bot.editMessageCaption(`❌ Payment Rejected for ${userId}.`, { chat_id: chatId, message_id: messageId }).catch(() => {});
 
             data.history.rejected = (data.history.rejected || 0) + 1;
             saveData();
@@ -487,8 +496,8 @@ function setupBotListeners() {
             const packName = pack.charAt(0).toUpperCase() + pack.slice(1);
             const successText = `✅ YOUR PAYMENT IS SUCCESSFULLY APPROVED\n\nClick below link to join private channel\n\nPack: ${packName}\nLink: ${link}\nContact support ${data.settings.support}`;
             
-            await bot.sendPhoto(userId, 'https://i.ibb.co/Dfz7CSMV/x.png', { caption: successText });
-            return bot.editMessageCaption(`✅ Link sent to user ${userId}.`, { chat_id: chatId, message_id: messageId });
+            await bot.sendPhoto(userId, 'https://i.ibb.co/Dfz7CSMV/x.png', { caption: successText }).catch(() => {});
+            return bot.editMessageCaption(`✅ Link sent to user ${userId}.`, { chat_id: chatId, message_id: messageId }).catch(() => {});
         }
     });
 
@@ -514,4 +523,4 @@ function setupBotListeners() {
 }
 
 // Start everything
-initData();
+initBot();
