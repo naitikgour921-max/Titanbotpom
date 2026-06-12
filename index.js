@@ -1,6 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
-const fs = require('fs');
 const axios = require('axios');
+const { MongoClient } = require('mongodb');
 
 const botToken = "8627551556:AAFKCxub18MGt4FnrizD4JxCKicpZFFfLDc";
 const adminId = "5291409360";
@@ -8,59 +8,87 @@ const adminId = "5291409360";
 // Polling mode is highly recommended for Node.js bots on Railway
 const bot = new TelegramBot(botToken, { polling: true });
 
-// --- JSON Data Management ---
-const dataFile = './data.json';
+// --- MongoDB Setup & Data Management ---
 const remoteDataUrl = "https://vipcentre.site/titanbotpom/data.json";
-let data = {};
+const mongoUrl = process.env.MONGO_URL; // Railway auto-injects this
+let dbClient;
+let collection;
+let data = {}; // We keep a local copy in RAM for instant speed
 
 async function initData() {
-    if (!fs.existsSync(dataFile)) {
-        try {
-            console.log("Fetching old data from URL...");
-            const response = await axios.get(remoteDataUrl);
-            data = response.data;
-            saveData();
-            console.log("Remote data fetched successfully and saved locally.");
-        } catch (err) {
-            console.log("Failed to fetch remote data. Creating default data structure.");
-            data = {
-                users: [],
-                user_details: {},
-                demos: [],
-                states: {},
-                pending: [],
-                history: { approved: 0, rejected: 0 },
-                settings: {
-                    upi: 'example@ybl',
-                    support: '@nglynx',
-                    premium_image: 'https://i.ibb.co/9x38myC/x.jpg',
-                    price_indian: '199',
-                    price_premium: '299',
-                    price_movies: '399',
-                    price_all: '499',
-                    link_indian: 'https://t.me/link1',
-                    link_premium: 'https://t.me/link2',
-                    link_movies: 'https://t.me/link3',
-                    link_all: 'https://t.me/link4'
-                }
-            };
-            saveData();
-        }
-    } else {
-        data = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
+    if (!mongoUrl) {
+        console.error("❌ ERROR: MONGO_URL variable is not set in Railway!");
+        process.exit(1);
     }
 
-    if (!data.user_details) {
-        data.user_details = {};
-        data.users.forEach(u => {
-            data.user_details[u] = "User (@NoUsername)";
-        });
-        saveData();
+    try {
+        dbClient = new MongoClient(mongoUrl);
+        await dbClient.connect();
+        const db = dbClient.db('VipBotDB');
+        collection = db.collection('botStorage');
+        
+        console.log("✅ Connected to MongoDB successfully!");
+
+        // Try to load existing data from MongoDB
+        const dbData = await collection.findOne({ _id: 'main_data' });
+
+        if (!dbData) {
+            console.log("⚠️ MongoDB is empty. Fetching old data from URL...");
+            try {
+                const response = await axios.get(remoteDataUrl);
+                data = response.data;
+                console.log("✅ Remote data fetched successfully.");
+            } catch (err) {
+                console.log("❌ Failed to fetch remote data. Creating default data structure.");
+                data = {
+                    users: [],
+                    user_details: {},
+                    demos: [],
+                    states: {},
+                    pending: [],
+                    history: { approved: 0, rejected: 0 },
+                    settings: {
+                        upi: 'example@ybl',
+                        support: '@nglynx',
+                        premium_image: 'https://i.ibb.co/9x38myC/x.jpg',
+                        price_indian: '199',
+                        price_premium: '299',
+                        price_movies: '399',
+                        price_all: '499',
+                        link_indian: 'https://t.me/link1',
+                        link_premium: 'https://t.me/link2',
+                        link_movies: 'https://t.me/link3',
+                        link_all: 'https://t.me/link4'
+                    }
+                };
+            }
+
+            if (!data.user_details) {
+                data.user_details = {};
+                data.users.forEach(u => {
+                    data.user_details[u] = "User (@NoUsername)";
+                });
+            }
+
+            // Save the newly fetched data into MongoDB
+            await collection.updateOne({ _id: 'main_data' }, { $set: data }, { upsert: true });
+            console.log("✅ Data successfully saved to MongoDB for the first time.");
+        } else {
+            console.log("✅ Old data loaded from MongoDB successfully.");
+            data = dbData;
+            delete data._id; // Remove mongo's internal ID so format matches pure JSON
+        }
+    } catch (error) {
+        console.error("❌ Fatal MongoDB Error:", error);
     }
 }
 
+// Fire-and-forget save function (Updates MongoDB in the background instantly)
 function saveData() {
-    fs.writeFileSync(dataFile, JSON.stringify(data, null, 4));
+    if (collection) {
+        collection.updateOne({ _id: 'main_data' }, { $set: data }, { upsert: true })
+            .catch(err => console.error("❌ MongoDB Save Error:", err));
+    }
 }
 
 function getAdminMenu() {
@@ -76,7 +104,7 @@ function getAdminMenu() {
     };
 }
 
-// Initialize the data on startup
+// Initialize Database on Startup
 initData();
 
 // --- Message Handling ---
